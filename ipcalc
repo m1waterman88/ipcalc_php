@@ -1,0 +1,1305 @@
+#!/usr/bin/env php
+<?php
+
+$version = '0.51';
+
+$quadsColor = "\033[34m"; // Dotted quads: blue
+$normalColor = "\033[m"; // Normal: black
+$binaryColor = "\033[33m"; // Binary: yellow
+$maskColor = "\033[31m"; // Netmask: red
+$classColor = "\033[35m"; // Classbits: magenta
+$subnetColor = "\033[0m\033[32m"; // Subnet bits: green
+$errorColor = "\033[31m";
+
+$sfont = '';
+$break = "\n";
+
+$oldColor = '';
+$actualColor = '';
+
+$optText = 1;
+$optHTML = 0;
+$optColor = 0;
+$optPrintBits = 1;
+$optPrintOnlyClass = 0;
+$optSplit = 0;
+$optDeaggregate = 0;
+$optVersion = 0;
+$optHelp = 0;
+$optSplitSizes = [];
+$arguments = [];
+$error = '';
+$thirtyTwoBits = 4294967295; // For masking bitwise not on 64 bit arch
+$ipv6 = 0;
+
+main();
+exit();
+
+function main()
+{
+    $address = -1;
+    $address2 = -1;
+    $network = -1;
+    $mask1 = -1;
+    $mask2 = -1;
+
+    if (!isset(($ARGV[0]))) {
+        usage();
+        exit();
+    }
+
+    @ARGV = getopts();
+
+    if ($optHelp) {
+        help();
+        exit();
+    }
+
+    if ($optVersion) {
+        echo $version . PHP_EOL;
+        exit();
+    }
+
+    if (!$optColor) {
+        $quadsColor = '';
+        $normalColor = '';
+        $binaryColor = '';
+        $maskColor = '';
+        $classColor = '';
+        $subnetColor = '';
+        $sfont = '';
+    }
+
+    if ($optHTML) {
+        $quadsColor = '<font color="#0000ff">';
+        $normalColor = '<font color="#000000">';
+        $binaryColor = '<font color="#909090">';
+        $maskColor = '<font color="#ff0000">';
+        $classColor = '<font color="#009900">';
+        $subnetColor = '<font color="#663366">';
+        $sfont = '</font>';
+        $break = '<br>';
+
+        echo <<<'EOF'
+        <!DOCTYPE HTML5>
+        <html>
+        <head>
+            <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+            <title>Bla</title>
+        </head>
+        <body>
+        EOF;
+
+        echo "<!-- Version {$version} -->\n";
+    }
+
+    // Get base address
+    if (isset($ARGV[0])) {
+        $address = argton($ARGV[0]);
+    }
+
+    if ($address == -1) {
+        $error .= "INVALID ADDRESS: {$ARGV[0]}\n";
+        $address = argton('192.168.1.1');
+        // Default to sample ipv6 address if $ipv6 == 1
+    }
+
+    if ($optPrintOnlyClass) {
+        echo getclass($address, true);
+        exit();
+    }
+
+    // If deaggregate get last address
+    if ($optDeaggregate) {
+        if (isset($ARGV[1])) {
+            $address2 = argton($ARGV[1]);
+        }
+
+        if ($address2 == -1) {
+            $error .= "INVALID ADDRESS2: {$ARGV[1]}\n";
+            $address2 = argton('192.168.1.1');
+        }
+    }
+
+    if ($optDeaggregate) {
+        if ($error) {
+            echo "$error\n";
+        }
+
+        echo "deaggregate " . ntoa($address) . " - " . ntoa($address2) . "\n";
+        deaggregate($address, $address2);
+        exit();
+    }
+
+    // Get netmasks
+    if ($ipv6) {
+        if (isset($ARGV[1]) {
+            $mask1 = check_mask6($ARGV[1]);
+
+            if ($mask1 == -1) {
+                echo "INVALID MASK1\n\n";
+                exit();
+            }
+        } else {
+            $mask1 = 64;
+        }
+    } else {
+        $mask1 = isset($ARGV[1]) ? argton($ARGV[1], true) : argton(24, true);
+
+        if ($mask1 == -1) {
+            $error .= "INVALID MASK1:   {$ARGV[1]}\n";
+            $mask1 = argton(24, true);
+        }
+
+        $mask2 = isset($ARGV[2]) ? argton($ARGV[2], true) : $mask1;
+
+        if ($mask2 == -1) {
+            $error .= "INVALID MASK2:   {$ARGV[2]}\n";
+            $mask2 = argton(24, true);
+        }
+    }
+
+    if ($error) {
+        if ($optColor) {
+            echo set_color($errorColor);
+        }
+
+        echo "{$error}\n";
+        echo set_color($normalColor);
+        exit();
+    }
+
+    if ($ipv6) {
+        ipcalc6($address, $address2, $mask1, $mask2);
+        exit();
+    }
+
+    html('<table border="0" cellspacing="0" cellpadding="0">');
+    html("\n");
+    printline ("Address",   $address ,$mask1,$mask1,1);
+    printline ("Netmask",   $mask1   ,$mask1,$mask1);
+    printline ("Wildcard", ~$mask1   ,$mask1,$mask1);
+    html("<tr>\n");
+    html('<td colspan="3"><tt>');
+    echo "=>";
+    html("</tt></td>\n");
+    html("</tr>\n");
+    echo "\n";
+
+    $network = $address & $mask1;
+    printnet($network, $mask1, $mask1);
+    html("</table>\n");
+
+    if ($optSplit) {
+        split_network($network, $mask1, $mask2, @optSplitSizes);
+        exit();
+    }
+
+    if ($mask1 < $mask2) {
+        echo "Subnets after transition from /" . ntobitcountmask($mask1);
+        echo " to /". ntobitcountmask($mask2) . "\n\n";
+        subnets($network, $mask1, $mask2);
+    }
+
+    if ($mask1 > $mask2) {
+        echo "Supernet\n\n";
+        supernet($network, $mask1, $mask2);
+
+        if ($optHTML) {
+            html("</table>\n");
+        }
+    }
+
+    if ($optHTML) {
+        echo <<<'EOF'
+        <p>
+            <a href="http://validator.w3.org/check/referer"><img border="0" src="http://www.w3.org/Icons/valid-html401" alt="Valid HTML 4.01!" height="31" width="88"></a>
+        </p>
+        EOF;
+    }
+
+    exit();
+}
+
+function end()
+{
+    if ($optHTML) {
+        echo "<html>\n";
+    }
+
+    exit();
+}
+
+function supernet($network, $mask1, $mask2)
+{
+    $network = $network & $mask2;
+    printline("Netmask", $mask2, $mask2, $mask1, 1);
+    printline("Wildcard", ~$mask2, $mask2, $mask1);
+    echo "\n";
+    printnet($network, $mask2, $mask1);
+}
+
+function subnets($network, $mask1, $mask2)
+{
+    $subnet = 0;
+    $bitcountmask1 = ntobitcountmask($mask1);
+    $bitcountmask2 = ntobitcountmask($mask2);
+
+    html('<table border="0" cellspacing="0" cellpadding="0">');
+    html("\n");
+    printline ('Netmask', $mask2, $mask2, $mask1, 1);
+    printline ('Wildcard', ~$mask2, $mask2, $mask1);
+    html("</table>\n");
+
+    echo "\n";
+
+    for ($subnet = 0; $subnet < (1 << ($bitcountmask2 - $bitcountmask1)); $subnet++)
+    {
+        $net = $network | ($subnet << (32 - $bitcountmask2));
+        echo " ". ($subnet + 1) .".\n";
+        html('<table border="0" cellspacing="0" cellpadding="0">');
+        html("\n");
+        printnet($net, $mask2, $mask1);
+        html("</table>\n");
+
+        if ($subnet >= 1000) {
+            echo "... stopped at 1000 subnets ...{$break}";
+            break;
+        }
+    }
+
+    $subnet = (1 << ($bitcountmask2-$bitcountmask1));
+    $hostn = ($network | ((~$mask2) & $thirtyTwoBits)) - $network - 1;
+
+    if ($hostn > -1) {
+        echo "\nSubnets:   $quadsColor$subnet";
+        html('</font>');
+        echo "{$normalColor}{$break}";
+        html('</font>');
+    }
+
+    if ($hostn < 1 ) {
+        $hostn = 1;
+    }
+
+    echo "Hosts:     $quadsColor" . ($hostn * $subnet);
+    html('</font>');
+    echo "{$normalColor}{$break}";
+    html('</font>');
+}
+
+
+function getclass($network, bool $numeric = false)
+{
+    $class = 1;
+
+    while (($network & (1 << (32 - $class))) == (1 << (32 - $class))) {
+        $class++;
+
+        if ($class > 5) {
+            return 'invalid';
+        }
+    }
+
+    if ($numeric) {
+        return $class[$class];
+    }
+
+    return chr($class + 64);
+}
+
+function printnet($network, $mask1, $mask2)
+{
+    $broadcast = $network | ((~$mask1) & $thirtyTwoBits);
+
+    $hmin = $network + 1;
+    $hmax = $broadcast - 1;
+    $hostn = $hmax - $hmin + 1;
+    $mask = ntobitcountmask($mask1);
+
+    if ($mask == 31) {
+        $hmax = $broadcast;
+        $hmin = $network;
+        $hostn = 2;
+    }
+
+    if ($mask == 32) {
+        $hostn = 1;
+    }
+
+    if ($mask == 32) {
+        printline('Hostroute', $network, $mask1, $mask2, 1);
+    } else {
+        printline('Network', $network, $mask1, $mask2, 1);
+        printline('HostMin', $hmin, $mask1, $mask2);
+        printline('HostMax', $hmax, $mask1, $mask2);
+
+        if ($mask < 31) {
+            printline('Broadcast', $broadcast,$mask1,$mask2);
+        }
+    }
+
+    html("<tr>\n");
+    html('<td valign="top"><tt>'); // Label
+    echo set_color($normalColor);
+    echo "Hosts/Net: " ;
+    html("</font></tt></td>\n");
+    html('<td valign="top"><tt>');
+    echo set_color($quadsColor);
+    printf "%-22s",$hostn;
+    html("</font></tt></td>\n");
+    html("<td>"); # Label
+
+    if ($optHTML) {
+        echo wrap_html(30, get_description($network, $mask1));
+    } else {
+        echo get_description($network, $mask1);
+    }
+
+    html("</font></td>\n");
+    html("</tr>\n");
+    html("\n");
+    text("\n");
+    text("\n");
+
+    return $hostn;
+}
+
+function get_description($network, $mask): string
+{
+    $description = [];
+    $field = '';
+
+    // Class
+    if ($optColor || $optHTML) {
+        $field = set_color($classColor) . "Class " . getclass($network);
+
+        if ($optHTML) {
+            $field .= '</font>';
+        }
+
+        $field .= set_color($normalColor);
+        $description[] = $field;
+    } else {
+        $description[] = 'Class ' . getclass($network);
+    }
+
+    // Netblock
+    $range = netblock($network, $mask);
+    $rangeDescription = $range['description'];
+
+    if (isset($rangeDescription)) {
+        if ($optHTML) {
+            $rangeDescription = "<a href=\"{$netblock_url}\">{$rangeDescription}</a>";
+        }
+
+        $description[] = $rangeDescription;
+    }
+
+    if (ntobitcountmask($mask) == 31) {
+        if ($optHTML) {
+            $description[] = "<a href=\"http://www.ietf.org/rfc/rfc3021.txt\">PtP Link</a>";
+        } else {
+            $description[] = 'PtP Link RFC 3021';
+        }
+    }
+
+    return implode(', ', $description);
+}
+
+function printline($label, $address, $mask1, $mask2, $html_fillup)
+{
+    $mask1 = ntobitcountmask($mask1);
+    $mask2 = ntobitcountmask($mask2);
+    $line = '';
+    $bit;
+    $newbitcolor_on = 0;
+    $toggle_newbitcolor = 0;
+    $bit_color;
+    $additional_info = '';
+    $classbitcolor_on;
+    $second_field;
+
+    if ($label == 'Netmask') {
+        $additional_info = " = $mask1";
+    }
+
+    if ($label == 'Network') {
+        $classbitcolor_on = 1;
+        $additional_info = "/$mask1";
+    }
+
+    if ($label == 'Hostroute' && $mask1 == 32) {
+        $classbitcolor_on = 1;
+    }
+
+    html("<tr>\n");
+    html("<td><tt>");
+    // Label
+    echo set_color($normalColor);
+    if ($optHTML && $html_fillup) {
+        echo "$label:";
+        print "&nbsp;" x (11 - length($label));
+    } else {
+        printf "%-11s","$label:";
+    }
+    html("</font></tt></td>\n");
+    // Address
+    html("<td><tt>");
+    echo set_color($quadsColor);
+
+    $second_field = ntoa($address).$additional_info;
+
+    if ($optHTML && $html_fillup) {
+        echo $second_field;
+        echo "&nbsp;" x (21 - length($second_field));
+    } else {
+        printf "%-21s", (ntoa($address).$additional_info);
+    }
+
+    html("</font></tt></td>\n");
+
+    if ($optPrintBits)
+    {
+        html("<td><tt>");
+        $bit_color = set_color($binaryColor);
+
+        if ($label == 'Netmask') {
+            $bit_color = set_color($maskColor);
+        }
+
+        if ($classbitcolor_on) {
+            $line .= set_color($classColor);
+        } else {
+            $line .= set_color($bit_color);
+        }
+
+        for ($i=1; $i<33; $i++)
+        {
+            $bit = 0;
+
+            if (($address & (1 << 32 - $i)) == (1 << 32 - $i)) {
+                $bit = 1;
+            }
+
+            $line .= $bit;
+
+            if ($classbitcolor_on && $bit == 0) {
+                $classbitcolor_on = 0;
+
+                $line .= $newbitcolor_on ? set_color($subnetColor) : set_color($bit_color);
+            }
+
+            if ($i % 8 == 0 && $i < 32) {
+                $line .= set_color($normalColor) . '.';
+                $line .= set_color('oldcolor');
+            }
+
+            if ($i == $mask1) {
+                $line .= " ";
+            }
+
+            if (($i == $mask1 || $i == $mask2) && $mask1 != $mask2) {
+                if ($newbitcolor_on) {
+                    $newbitcolor_on = 0;
+
+                    if (!$classbitcolor_on) {
+                        $line .= set_color($bit_color);
+                    }
+                } else {
+                    $newbitcolor_on = 1;
+
+                    if (!$classbitcolor_on) {
+                        $line .= set_color($subnetColor);
+                    }
+                }
+            }
+        }
+
+        $line .= set_color($normalColor);
+        echo $line;
+        html("</tt></font></td>\n");
+    }
+
+    html("</tr>\n");
+    html("\n");
+    text("\n");
+}
+
+function text($str)
+{
+    if ($optText) {
+        echo $str;
+    }
+}
+
+function html($str)
+{
+    if ($optHTML) {
+        echo $str;
+    }
+}
+
+function set_color(string $newColor)
+{
+    $return = '';
+
+    if ($newColor === 'oldcolor') {
+        $newColor = $oldColor;
+    }
+
+    $oldColor = $actualColor;
+    $actualColor = $newColor;
+    $return .= $newColor;
+    return $return;
+}
+
+function split_network($network, $mask1, $mask2, array $sizes)
+{
+    $first_address = $network;
+    $broadcast = $network | ((~$mask1) & $thirtyTwoBits);
+    $network = [];
+    $i = 0;
+    $net = [];
+    $mask = [];
+    $needed_addresses = 0;
+    $needed_size;
+
+    foreach ($sizes as $size) {
+        $needed_size = round2powerof2($size + 2);
+        $network[] = "{$needed_size}:" . $i++;
+        $needed_addresses += $needed_size;
+    }
+
+    @network = sort { ($b =~ /(.+):/)[0] <=> ($a =~ /(.+):/)[0] } @network;
+
+    foreach ($network) {
+        my ($size, $nr) = split ":",$_;
+        $net[$nr]= $network;
+        $mask[$nr]= size2bitcountmask($size);
+        $network += $size;
+    }
+
+    $i = -1;
+    while ($i++ < $#sizes) {
+        printf "%d. Requested size: %d hosts\n", $i + 1, $sizes[$i];
+        printline('Netmask', bitcountmaskton($mask[$i]), bitcountmaskton($mask[$i]), $mask2);
+        printnet($net[$i], bitcountmaskton($mask[$i]), $mask2);
+    }
+
+    $used_mask = size2bitcountmask($needed_addresses);
+
+    if ($used_mask < ntobitcountmask($mask1)) {
+        echo "Network is too small\n";
+    }
+
+    echo "Needed size:  {$needed_addresses} addresses.\n";
+    echo "Used network: " . ntoa($first_address) . "/{$used_mask}\n";
+    echo "Unused:\n";
+    deaggregate($network, $broadcast);
+}
+
+function round2powerof2()
+{
+    $i = 0;
+    while ($_[0] > ( 1 << $i)) {
+        $i++;
+    }
+
+    return 1 << $i;
+}
+
+function size2bitcountmask($size)
+{
+    $i = 0;
+    while ($size > ( 1 << $i)) {
+        $i++;
+    }
+
+    return 32 - $i;
+}
+
+/**
+ * Deaggregate address range.
+ *
+ * @param string $start Dotted quad
+ * @param string $end Dotted quad
+ * @return void
+ */
+function deaggregate($start, $end): void
+{
+    $base = $start;
+
+    while ($base <= $end)
+    {
+        $step = 0;
+        while (($base | (1 << $step)) != $base) {
+            if (($base | (((~0) & $thirtyTwoBits) >> (31-$step))) > $end) {
+                break;
+            }
+
+            $step++;
+        }
+
+        echo ntoa($base) . '/' . (32 - $step) . "\n";
+        $base += 1 << $step;
+    }
+}
+
+/**
+ * Set global opt variables.
+ *
+ * -h --html
+ * -h without further opts -> help
+ *     (workaround: can't change meaning of -h since this would
+ *      break old cgi_wrapper scripts)
+ * --help
+ * -n --nocolor
+ * -v --version
+ * -c --class print natural class
+ * -s --split
+ * -b --nobinary
+ * -d --deaggregate
+ *
+ * @return array $ARGV without options
+ */
+function getopts()
+{
+    $arguments = [];
+    $arg;
+    $prefix;
+    $nr_opts = 0;
+    $tmp = [];
+
+    // optColor defaults to 1 when connected to a terminal
+    if (-t STDOUT) {
+        $optColor = 1;
+    }
+
+    // Under Emacs, do not use colors by default. The TERM is for older Emacs versions.
+    if (!isset($ENV{'TERM'}) || $ENV{'TERM'} =~ /dumb/i || $ENV{'INSIDE_EMACS'}) {
+        $optColor = 0;
+    }
+
+    while (has_opts()) {
+        $arg = shift @ARGV;
+
+        if ($arg =~ /^--(.+)/) {
+            $nr_opts += read_opt('--', $1);
+        } elseif ($arg =~ /^-(.+)/) {
+            $nr_opts += read_opt('-', split //, $1);
+        } else {
+            push @tmp, $arg;
+        }
+    }
+
+    foreach (@ARGV) {
+        push @tmp,$_;
+    }
+
+    // Extract base address and netmasks and ranges
+    foreach (@tmp) {
+        if (/^(.+?)\/(.+)$/) {
+            push @arguments,$1;
+            push @arguments,$2;
+        } elseif (/^(.+)\/$/) {
+            push @arguments,$1;
+        } elseif (/^(.+)\-(.+)$/) {
+            push @arguments,$1;
+            push @arguments,$2;
+            $optDeaggregate = 1;
+        } elseif (/^\-$/) {
+            $optDeaggregate = 1;
+        } else {
+            push @arguments, $_;
+        }
+    }
+
+    if ($#arguments == 2 && $arguments[1] === '-') {
+        @arguments = ($arguments[0], $arguments[2]);
+        $optDeaggregate = 1;
+    }
+
+    // Workaround for -h
+    if ($optHTML && $nr_opts == 1 && $#arguments == -1) {
+        $optHelp = 1;
+    }
+
+    if ($error) {
+        echo $error;
+        exit();
+    }
+
+    return @arguments;
+}
+
+/**
+ * @return int
+ */
+function has_opts(): int
+{
+    foreach (@ARGV) {
+        if (/^-/) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+function read_opt($prefix)
+{
+    $prefix = shift;
+    $opts_read = 0;
+
+    foreach my $opt (@_)
+    {
+        ++$opts_read;
+
+        if ($opt === 'h' || $opt === 'html') {
+            $optHTML = 1;
+            $optText = 0;
+        } elseif ($opt === 'help') {
+            $optHelp = 1;
+        } elseif ($opt === 'c' || $opt === 'color') {
+            $optColor = 1;
+        } elseif ($opt === 'n' || $opt === 'nocolor') {
+            $optColor = 0;
+        } elseif ($opt === 'v' || $opt === 'version') {
+            $optVersion = 1;
+        } elseif ($opt === 'b' || $opt === 'nobinary') {
+            $optPrintBits = 0;
+        } elseif ($opt === 'c' || $opt === 'class') {
+            $optPrintOnlyClass = 1;
+        } elseif ($opt === 'r' || $opt === 'range') {
+            $optDeaggregate = 1;
+        } elseif ($opt === 's' || $opt === 'split') {
+            $optSplit = 1;
+
+            while (isset($ARGV[0]) && $ARGV[0] =~ /^\d+$/) {
+                push @optSplitSizes, shift @ARGV;
+            }
+
+            if ($#optSplitSizes < 0) {
+                $error .= "Argument for {$prefix}{$opt} is missing or invalid\n";
+            }
+        } else {
+            $error .= "Unknown option: {$prefix}{$opt}\n";
+            --$opts_read;
+        }
+    }
+
+    return $opts_read;
+}
+
+/**
+ * @param int $width
+ * @param string $str
+ * @return string
+ */
+function wrap_html(int $width, string $str): string
+{
+    @str = split //, $str;
+    $result = '';
+    $current_pos = 0;
+    $start = 0;
+    $last_pos = 0;
+    $line;
+
+    while ($current_pos < $#str)
+    {
+        // Find next blank
+        while ($current_pos < $#str && $str[$current_pos] != ' ') {
+            // Ignore tags
+            if ($str[$current_pos] === '<') {
+                $current_pos++;
+                while ($str[$current_pos] !== '>') {
+                    $current_pos++;
+                }
+            }
+
+            $current_pos++;
+        }
+
+        // Fits in one line?
+        $line = substr($str, $start, $current_pos - $start);
+        $line =~ s/<.+?>//g;
+
+        if (length($line) <= $width) {
+            // Yes: keep position in mind and continue
+            $last_pos = $current_pos;
+            $current_pos++;
+            continue;
+        } else {
+            // No: wrap at last position if there was one; otherwise, wrap here
+            if ($last_pos != $start) {
+                $current_pos = $last_pos;
+            }
+
+            $line = substr($str,$start,$current_pos-$start);
+            $current_pos++;
+            $start = $current_pos;
+            $last_pos = $start;
+
+            // no output if end of string is reached because
+            // rest of string is treated after this block
+            if ($current_pos < $#str) {
+                $result .= "{$line}<br>";
+            }
+        }
+    }
+
+    $line = substr($str, $start, $current_pos - $start);
+    $result .= $line;
+    return $result;
+}
+
+/**
+ * Get network address as dq
+ *
+ * @param string $myNetworkStart
+ * @param int $myMask
+ * @return string Description and URL
+ */
+function netblock($myNetworkStart, $myMask)
+{
+    $myNetworkEnd = $myNetworkStart | ((~$myMask) & $thirtyTwoBits);
+
+    $ranges = [
+        [
+            'network'     => '10.0.0.0',
+            'mask'        => '8',
+            'description' => 'Private Internet',
+            'url'         => 'http://www.ietf.org/rfc/rfc1918.txt',
+        ], [
+            'network'     => '172.16.0.0',
+            'mask'        => '12',
+            'description' => 'Private Internet',
+            'url'         => 'http://www.ietf.org/rfc/rfc1918.txt',
+        ], [
+            'network'     => '192.168.0.0',
+            'mask'        => '16',
+            'description' => 'Private Internet',
+            'url'         => 'http://www.ietf.org/rfc/rfc1918.txt',
+        ], [
+            'network'     => '127.0.0.0',
+            'mask'        => '8',
+            'description' => 'Loopback',
+            'url'         => 'http://www.ietf.org/rfc/rfc1700.txt',
+        ], [
+            'network'     => '169.254.0.0',
+            'mask'        => '16',
+            'description' => 'APIPA',
+            'url'         => 'http://www.ietf.org/rfc/rfc3330.txt',
+        ], [
+            'network'     => '224.0.0.0',
+            'mask'        => '4',
+            'description' => 'Multicast',
+            'url'         => 'http://www.ietf.org/rfc/rfc3171.txt',
+        ],
+    ];
+
+    $match = 0;
+
+    foreach ($ranges as $range) {
+        $start = argton($range['network']);
+        $end = $start + (1 << (32 - $range['mask'])) - 1;
+
+        // myNetwork starts within block
+        if ($myNetworkStart >= $start && $myNetworkStart <= $end) {
+            $match++;
+        }
+
+        // myNetwork ends within block
+        if ($myNetworkEnd >= $start && $myNetworkEnd <= $end) {
+            $match++;
+        }
+
+        // Block is part of myNetwork
+        if ($start > $myNetworkStart && $end < $myNetworkEnd) {
+            $match = 1;
+        }
+
+        if ($match == 1) {
+            return "In Part {$range['description']}";
+        }
+
+        if ($match == 2) {
+            return $range['description'];
+        }
+    }
+
+    return '';
+}
+
+function p2($bits)
+{
+    return 1 << $bits;
+}
+
+function ntob6($n)
+{
+    $b = '';
+    for($i = 127; $i > -1; $i--)
+    {
+        if (($n & (1 << $i)) == (1 << $i)) {
+            $b .= '1';
+        } else {
+            $b .= '0';
+        }
+
+        if ($i % 16 == 0 && $i != 0) {
+            $b .= ':';
+        }
+
+    }
+
+    return $b;
+}
+
+
+function print_summary6($address, $netmask)
+{
+    printf "%-9s","Address:";
+    printf "%-40s",ntoip6($address);
+    printf "%-130s",ntob6($address);
+    echo "\n";
+
+    printf "%-9s","Netmask:";
+    printf "%-40s",$netmask;
+    printf "%-130s",ntob6(prefixlenton($netmask));
+    echo "\n";
+
+    printf "%-9s","Prefix:";
+    printf "%-40s",ntoip6($address & prefixlenton($netmask))."/".$netmask;
+    printf "%-130s",ntob6($address & prefixlenton($netmask));
+    echo "\n";
+    echo "\n";
+}
+
+
+function ipcalc6($address1, $address2, $mask1, $mask2)
+{
+    print_summary6($address1, $mask1);
+    exit();
+}
+
+
+// Converter
+
+function ntoip6($n)
+{
+    $slice;
+    $slices = [];
+
+    for ($i = 7; $i > -1; $i--) {
+        $slice = ($n >> ($i * 16)) & 65535;
+        push @slices,sprintf "%x",$slice;
+    }
+
+    $result = join ':',@slices;
+
+    // Compress
+    $length = 0;
+    $max_length = 0;
+    $start = 0;
+
+    for ($i = 0; $i < 8; $i++) {
+        $length = 0;
+
+        while (($i + $length < 8) && $slices[$i + $length] == '0') {
+            $length++;
+        }
+
+        if ($length > $max_length) {
+            $start = $i;
+            $max_length = $length;
+        }
+    }
+
+    if ($max_length > 0) {
+        $result = $start == 0 ? '::' : '';
+
+        for ($i = 0; $i < 8; $i++) {
+            if (!($i >= $start && $i < $start + $max_length)) {
+                $result .= $slices[$i];
+
+                if ($i < 7) {
+                    $result .= ':';
+                }
+
+                if ($i + 1 == $start) {
+                    $result .= ':';
+                }
+            }
+        }
+    }
+
+    return $result;
+}
+
+function bitcountmaskton($bitcountmask)
+{
+   $n;
+   for ($i = 0; $i < $bitcountmask; $i++) {
+      $n |= 1 << (31 - $i);
+   }
+
+   return $n;
+}
+
+function ip6ton($arg)
+{
+    $n = 0;
+    $slice = [];
+    $compressed = 0;
+    $arg = lc($arg);
+    $test = $arg;
+    $test =~ s/[0-9a-f:]//g;
+
+    if ($test ne '') {
+        return -1;
+    }
+
+    $test = $arg;
+    if ($arg =~ /^::/) {
+        $arg = '0'.$arg;
+    }
+
+    if ($arg =~/::$/) {
+        $arg = $arg.'0';
+    }
+
+    @tmp = split ':',$arg;
+
+    foreach my $slice (@tmp)
+    {
+        if ($slice === '') {
+            if ($compressed) {
+                return -1;
+            }
+
+            for ($i = 0; $i < 8 - $#tmp; $i++) {
+                push @slice,0;
+                $compressed = 1;
+            }
+        } else {
+            push @slice,$slice;
+        }
+    }
+
+    if ($#slice != 7) {
+        return -1;
+    }
+
+    for ($i = 0; $i < 8; $i++) {
+        $n += hex($slice[$i]) << 16 * (7 - $i);
+    }
+
+    return $n;
+}
+
+function prefixlenton($prefixlen)
+{
+    $n = 0;
+    for ($i = 128; $i > 127 - $prefixlen; $i--) {
+        $n += p2($i);
+    }
+
+    return $n;
+}
+
+function check_mask6($mask)
+{
+    if ($mask !~ /^\d{1,3}$/ || $mask < 0 || $mask > 128) {
+        return -1;
+    }
+
+    return $mask;
+}
+
+/**
+ * @param string|int $arg An address as dotted decimals, bit-count-mask, or hex
+ * @param bool $netmaskFlag Whether to check netmask and negate wildcard masks
+ * @return int Invalid returns -1
+ */
+function argton(string|int $arg, bool $netmaskFlag = false): int
+{
+    $ipv6 = false;
+    $i = 24;
+    $n = 0;
+
+    // IPv6
+    if (!$netmaskFlag && $arg =~ /^[0-9a-fA-F:]+$/) {
+        // Check syntax
+        $ipv6 = true;
+        return ip6ton($arg);
+    }
+
+    // Dotted decimals
+    if ($arg =~ /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/) {
+        my @decimals = ($1,$2,$3,$4);
+
+        foreach (@decimals) {
+            if ($_ > 255 || $_ < 0) {
+                return -1;
+            }
+
+            $n += $_ << $i;
+            $i -= 8;
+        }
+
+        if ($netmaskFlag) {
+            return validate_netmask($n);
+        }
+
+        return $n;
+    }
+
+    // Bit-count-mask (24 or /24)
+    $arg =~ s/^\/(\d+)$/$1/;
+
+    // IPv6
+    // For IPv6, this code is never reached:
+    if ($ipv6) {
+        if ($arg !~ /^\d{1,3}$/ || $arg < 0 || $arg > 128) {
+            return -1;
+        }
+
+        return prefixlenton($arg);
+    }
+
+    // IPv4
+    if ($arg =~ /^\d{1,2}$/) {
+        if ($arg < 0 || $arg > 32) {
+            return -1;
+        }
+
+        for ($i = 0; $i < $arg; $i++) {
+            $n |= 1 << (31 - $i);
+        }
+
+        return $n;
+    }
+
+    // Hex
+    if ($arg =~ /^[0-9A-Fa-f]{8}$/ || $arg =~ /^0x[0-9A-Fa-f]{8}$/) {
+        if ($netmaskFlag) {
+            return validate_netmask(hex($arg));
+        }
+
+        return hex($arg);
+    }
+
+    // Invalid
+    return -1;
+}
+
+function validate_netmask($mask)
+{
+    $saw_zero = 0;
+
+    // Negate wildcard
+    if (($mask & (1 << 31)) == 0) {
+        echo "WILDCARD\n";
+        $mask = ~$mask;
+    }
+
+    // Find ones following zeros
+    for ($i = 0; $i < 32; $i++) {
+        if (($mask & (1 << (31 - $i))) == 0) {
+            $saw_zero = 1;
+            continue;
+        }
+
+        if ($saw_zero) {
+            echo 'INVALID NETMASK' . PHP_EOL;
+            return -1;
+        }
+    }
+
+    return $mask;
+}
+
+function ntoa()
+{
+   return join '.',unpack('CCCC',pack('N',shift));
+}
+
+function ntobitcountmask(int $mask): int
+{
+    $bitcountmask = 0;
+
+    // Find first zero
+    while (($mask & (1 << (31 - $bitcountmask))) != 0 ) {
+        if ($bitcountmask > 31) {
+            break;
+        }
+
+        $bitcountmask++;
+    }
+
+    return $bitcountmask;
+}
+
+// Documentation
+
+function usage()
+{
+    echo <<<EOF
+    Usage: ipcalc [options] <ADDRESS>[[/]<NETMASK>] [NETMASK]
+    ipcalc takes an IP address and netmask and calculates the resulting
+    broadcast, network, Cisco wildcard mask, and host range. By giving a
+    second netmask, you can design sub- and super-networks. It is also
+    intended to be a teaching tool and presents the results as
+    easy-to-understand binary values.
+    -n --nocolor  Don't display ANSI color codes.
+    -c --color    Display ANSI color codes (default).
+    -b --nobinary Suppress the bitwise output.
+    -c --class    Just print bit-count-mask of given address.
+    -h --html     Display results as HTML (not finished in this version).
+    -v --version  Print Version.
+    -s --split n1 n2 n3
+                  Split into networks of size n1, n2, n3.
+    -r --range    Deaggregate address range.
+       --help     Longer help text.
+    Examples:
+    ipcalc 192.168.0.1/24
+    ipcalc 192.168.0.1/255.255.128.0
+    ipcalc 192.168.0.1 255.255.128.0 255.255.192.0
+    ipcalc 192.168.0.1 0.0.63.255
+    ipcalc <ADDRESS1> - <ADDRESS2>  deaggregate address range
+    ipcalc <ADDRESS>/<NETMASK> --s a b c
+                               split network to subnets where a b c fits in.
+    ! New HTML support not yet finished.
+    ipcalc {$version}
+    EOF;
+}
+
+function help()
+{
+    echo <<<EOF
+    IP Calculator {$version}
+    Enter your netmask(s) in CIDR notation (/25) or dotted decimals
+    (255.255.255.0). Inverse netmasks are recognized. If you omit the
+    netmask, ipcalc uses the default netmask for the class of your
+    network.
+    Look at the space between the bits of the addresses: The bits before
+    it are the network part of the address while the bits after it are the host
+    part. You can see two simple facts: (1) In a network address, all host bits
+    are zero. (2) In a broadcast address, they are all set.
+    The class of your network is determined by its first bits.
+    If your network is a private internet according to RFC 1918, this is
+    remarked. When displaying subnets, the new bits in the network part of
+    the netmask are marked in a different color.
+    The wildcard is the inverse netmask as used for access control lists
+    in Cisco routers. You can also enter netmasks in wildcard notation.
+    Do you want to split your network into subnets? Enter the address and
+    netmask of your original network and play with the second netmask
+    until the result matches your needs.
+    Thanks to Krischan Jodies and all who contributed to his project for the original source code from which this port was derived: http://jodies.de/ipcalc
+    EOF;
+
+    usage();
+    exit();
+}
